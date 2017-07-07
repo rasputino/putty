@@ -19,8 +19,6 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <shellapi.h>
-/* brian jiang */
-#include <shlwapi.h>
 
 #ifdef MSVC4
 #define TVINSERTSTRUCT  TV_INSERTSTRUCT
@@ -69,8 +67,8 @@ void force_normal(HWND hwnd)
     recurse = 0;
 }
 
-static int CALLBACK LogProc(HWND hwnd, UINT msg,
-			    WPARAM wParam, LPARAM lParam)
+static INT_PTR CALLBACK LogProc(HWND hwnd, UINT msg,
+                                WPARAM wParam, LPARAM lParam)
 {
     int i;
 
@@ -164,8 +162,8 @@ static int CALLBACK LogProc(HWND hwnd, UINT msg,
     return 0;
 }
 
-static int CALLBACK LicenceProc(HWND hwnd, UINT msg,
-				WPARAM wParam, LPARAM lParam)
+static INT_PTR CALLBACK LicenceProc(HWND hwnd, UINT msg,
+                                    WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
       case WM_INITDIALOG:
@@ -191,8 +189,8 @@ static int CALLBACK LicenceProc(HWND hwnd, UINT msg,
     return 0;
 }
 
-static int CALLBACK AboutProc(HWND hwnd, UINT msg,
-			      WPARAM wParam, LPARAM lParam)
+static INT_PTR CALLBACK AboutProc(HWND hwnd, UINT msg,
+                                  WPARAM wParam, LPARAM lParam)
 {
     char *str;
 
@@ -202,10 +200,12 @@ static int CALLBACK AboutProc(HWND hwnd, UINT msg,
 	SetWindowText(hwnd, str);
 	sfree(str);
         {
+            char *buildinfo_text = buildinfo("\r\n");
             char *text = dupprintf
-                ("%s\r\n\r\n%s\r\n\r\n%s",
-                 appname, ver,
+                ("%s\r\n\r\n%s\r\n\r\n%s\r\n\r\n%s",
+                 appname, ver, buildinfo_text,
                  "\251 " SHORT_COPYRIGHT_DETAILS ". All rights reserved.");
+            sfree(buildinfo_text);
             SetDlgItemText(hwnd, IDA_TEXT, text);
             sfree(text);
         }
@@ -227,7 +227,7 @@ static int CALLBACK AboutProc(HWND hwnd, UINT msg,
 	  case IDA_WEB:
 	    /* Load web browser */
 	    ShellExecute(hwnd, "open",
-			 "http://www.chiark.greenend.org.uk/~sgtatham/putty/",
+			 "https://www.chiark.greenend.org.uk/~sgtatham/putty/",
 			 0, 0, SW_SHOWDEFAULT);
 	    return 0;
 	}
@@ -293,8 +293,8 @@ static void SaneEndDialog(HWND hwnd, int ret)
 /*
  * Null dialog procedure.
  */
-static int CALLBACK NullDlgProc(HWND hwnd, UINT msg,
-				WPARAM wParam, LPARAM lParam)
+static INT_PTR CALLBACK NullDlgProc(HWND hwnd, UINT msg,
+                                    WPARAM wParam, LPARAM lParam)
 {
     return 0;
 }
@@ -377,8 +377,8 @@ static void create_controls(HWND hwnd, char *path)
  * (Being a dialog procedure, in general it returns 0 if the default
  * dialog processing should be performed, and 1 if it should not.)
  */
-static int CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
-				       WPARAM wParam, LPARAM lParam)
+static INT_PTR CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
+                                           WPARAM wParam, LPARAM lParam)
 {
     HWND hw, treeview;
     struct treeview_faff tvfaff;
@@ -515,6 +515,7 @@ static int CALLBACK GenericMainDlgProc(HWND hwnd, UINT msg,
              * And create the actual control set for that panel, to
              * match the initial treeview selection.
              */
+            assert(firstpath);   /* config.c must have given us _something_ */
             create_controls(hwnd, firstpath);
 	    dlg_refresh(NULL, &dp);    /* and set up control values */
 	}
@@ -787,8 +788,8 @@ void showabout(HWND hwnd)
     DialogBox(hinst, MAKEINTRESOURCE(IDD_ABOUTBOX), hwnd, AboutProc);
 }
 
-int verify_ssh_host_key(void *frontend, char *host, int port, char *keytype,
-                        char *keystr, char *fingerprint,
+int verify_ssh_host_key(void *frontend, char *host, int port,
+                        const char *keytype, char *keystr, char *fingerprint,
                         void (*callback)(void *ctx, int result), void *ctx)
 {
     int ret;
@@ -896,6 +897,33 @@ int askalg(void *frontend, const char *algtype, const char *algname,
 	return 0;
 }
 
+int askhk(void *frontend, const char *algname, const char *betteralgs,
+          void (*callback)(void *ctx, int result), void *ctx)
+{
+    static const char mbtitle[] = "%s Security Alert";
+    static const char msg[] =
+	"The first host key type we have stored for this server\n"
+	"is %s, which is below the configured warning threshold.\n"
+	"The server also provides the following types of host key\n"
+        "above the threshold, which we do not have stored:\n"
+        "%s\n"
+	"Do you want to continue with this connection?\n";
+    char *message, *title;
+    int mbret;
+
+    message = dupprintf(msg, algname, betteralgs);
+    title = dupprintf(mbtitle, appname);
+    mbret = MessageBox(NULL, message, title,
+		       MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2);
+    socket_reselect_all();
+    sfree(message);
+    sfree(title);
+    if (mbret == IDYES)
+	return 1;
+    else
+	return 0;
+}
+
 /*
  * Ask whether to wipe a session log file before writing to it.
  * Returns 2 for wipe, 1 for append, 0 for cancel (don't log).
@@ -968,188 +996,3 @@ void old_keyfile_warning(void)
     sfree(msg);
     sfree(title);
 }
-
-/* brian */
-static int CALLBACK FindProc(HWND hwnd, UINT msg,
-                WPARAM wParam, LPARAM lParam)
-{
-  static WCHAR buf[120] = L"";
-  static int bMatchCase = 0;
-  static int bMatchWord = 0;
-  static int bUp = 1;
-
-  switch (msg) {
-  case WM_INITDIALOG:
-    {
-      SetDlgItemTextW(hwnd, IDC_FINDTEXT, buf);
-
-      bUp =1;
-      CheckDlgButton(hwnd, IDC_RADIOUP, BST_CHECKED);
-      /*
-        if (bUp)
-        CheckDlgButton(hwnd, IDC_RADIOUP, BST_CHECKED);
-        else
-        CheckDlgButton(hwnd, IDC_RADIODOWN, BST_CHECKED);
-      */
-
-      if (bMatchWord) CheckDlgButton(hwnd, IDC_CHECKMatchWord, BST_CHECKED);
-      else CheckDlgButton(hwnd, IDC_CHECKMatchWord, BST_UNCHECKED);
-
-      if (bMatchCase) CheckDlgButton(hwnd, IDC_CHECKMatchCase, BST_CHECKED);
-      else CheckDlgButton(hwnd, IDC_CHECKMatchCase, BST_UNCHECKED);
-    }
-
-    return 1;
-  case WM_COMMAND:
-    switch (LOWORD(wParam)) {
-    case IDOK:
-    case IDCANCEL:
-      logbox = NULL;
-      SetActiveWindow(GetParent(hwnd));
-      DestroyWindow(hwnd);
-      return 0;
-
-    case IDC_CHECKMatchCase:
-      bMatchCase = (IsDlgButtonChecked(hwnd, IDC_CHECKMatchCase))? 1 : 0;
-      break;
-
-    case IDC_CHECKMatchWord:
-      bMatchWord = (IsDlgButtonChecked(hwnd, IDC_CHECKMatchWord))? 1 : 0;
-      break;
-
-    case IDC_RADIOUP:
-      bUp = 1;
-      break;
-
-    case IDC_RADIODOWN:
-      bUp = 0;
-      break;
-
-    case IDC_FINDTEXT:
-      if (HIWORD(wParam) == EN_CHANGE){
-        if (SendMessage( GetDlgItem(hwnd, IDC_FINDTEXT), WM_GETTEXTLENGTH, 0, 0L) == 0){
-          EnableWindow(GetDlgItem(hwnd, IDN_FIND), 0);
-        }else{
-          EnableWindow(GetDlgItem(hwnd, IDN_FIND), 1);
-        }
-      }
-      break;
-
-    case IDN_FIND:
-
-      GetDlgItemTextW(hwnd, IDC_FINDTEXT, buf, 120);
-
-      /* if (wcslen(buf) == 0) break; */
-
-      switch (term_search(term, buf,
-                          bUp? 0 : 1,
-                          bMatchCase,
-                          bMatchWord
-                          )){
-      case 1:
-        /* SetWindowText(hwnd, "Find - reach the end"); */
-        MessageBox(hwnd, "Reach the end", "PuTTY", MB_OK | MB_ICONWARNING);
-        break;
-      case -1:
-        /* SetWindowText(hwnd, "Find - reach the beginning"); */
-        MessageBox(hwnd, "Reach the beginning", "PuTTY", MB_OK | MB_ICONWARNING);
-        break;
-        /*
-      case 0:
-        SetWindowText(hwnd, "Find");
-        break;
-        */
-      }
-
-      return 0;
-    }
-    return 0;
-  case WM_CLOSE:
-    logbox = NULL;
-    SetActiveWindow(GetParent(hwnd));
-    DestroyWindow(hwnd);
-    return 0;
-  }
-  return 0;
-}
-
-
-
-void show_find(HWND hwnd)
-{
-  if (!logbox) {
-    term_deselect(term);
-    logbox = CreateDialog(hinst, MAKEINTRESOURCE(IDD_FINDBOX),
-                          hwnd, FindProc);
-    ShowWindow(logbox, SW_SHOWNORMAL);
-  }
-  SetActiveWindow(logbox);
-}
-/* Title Change Enhancement by Kasper */
-static int CALLBACK ChangeTitleProc(HWND hwnd, UINT msg,
-                WPARAM wParam, LPARAM lParam)
-{
-    char buf[120] = "";
-    char *pbuf = buf;
-    
-  switch (msg) 
-  {
-    case WM_INITDIALOG:
-    {
-      SetDlgItemText(hwnd, IDC_TITLE, pbuf);
-    }
-    return 1;
-
-    case WM_COMMAND:
-      switch (LOWORD(wParam)) 
-      {
-        case IDC_TITLE:
-          if (HIWORD(wParam) == EN_CHANGE)
-          {
-            if (SendMessage(GetDlgItem(hwnd, IDC_TITLE), WM_GETTEXTLENGTH, 0, 0L) == 0)
-            {
-               EnableWindow(GetDlgItem(hwnd, IDN_CHANGE), 0);
-            }
-            else
-            {
-               EnableWindow(GetDlgItem(hwnd, IDN_CHANGE), 1);
-            }
-          }
-          break;
-            
-        case IDN_CHANGE:
-          GetDlgItemText(hwnd, IDC_TITLE, pbuf, 120);
-          set_title(NULL, pbuf);
-          logbox = NULL;
-          SetActiveWindow(GetParent(hwnd));
-          DestroyWindow(hwnd);
-          return 0;
-
-        case IDCANCEL:
-          logbox = NULL;
-          SetActiveWindow(GetParent(hwnd));
-          DestroyWindow(hwnd);
-          return 0;
-      }
-      return 0;
-
-    case WM_CLOSE:
-      logbox = NULL;
-      SetActiveWindow(GetParent(hwnd));
-      DestroyWindow(hwnd);
-      return 0;
-  }
-  return 0;
-}
-
-void show_titlechange(HWND hwnd)
-{
-   if (!logbox) {
-    term_deselect(term);
-    logbox = CreateDialog(hinst, MAKEINTRESOURCE(IDD_TITLECHANGE),
-                  hwnd, ChangeTitleProc);
-    ShowWindow(logbox, SW_SHOWNORMAL);
-    }
-    SetActiveWindow(logbox);
-}
-/* end*/

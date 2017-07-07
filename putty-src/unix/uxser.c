@@ -56,7 +56,7 @@ static int serial_find_by_fd(void *av, void *bv)
 
 static tree234 *serial_by_fd = NULL;
 
-static int serial_select_result(int fd, int event);
+static void serial_select_result(int fd, int event);
 static void serial_uxsel_setup(Serial serial);
 static void serial_try_write(Serial serial);
 
@@ -289,8 +289,8 @@ static const char *serial_configure(Serial serial, Conf *conf)
  */
 static const char *serial_init(void *frontend_handle, void **backend_handle,
 			       Conf *conf,
-			       char *host, int port, char **realhost, int nodelay,
-			       int keepalive)
+			       const char *host, int port, char **realhost,
+                               int nodelay, int keepalive)
 {
     Serial serial;
     const char *err;
@@ -366,7 +366,7 @@ static void serial_reconfig(void *handle, Conf *conf)
     serial_configure(serial, conf);
 }
 
-static int serial_select_result(int fd, int event)
+static void serial_select_result(int fd, int event)
 {
     Serial serial;
     char buf[4096];
@@ -376,7 +376,7 @@ static int serial_select_result(int fd, int event)
     serial = find234(serial_by_fd, &fd, serial_find_by_fd);
 
     if (!serial)
-	return 1;		       /* spurious event; keep going */
+	return;		       /* spurious event; keep going */
 
     if (event == 1) {
 	ret = read(serial->fd, buf, sizeof(buf));
@@ -391,11 +391,11 @@ static int serial_select_result(int fd, int event)
 	} else if (ret < 0) {
 #ifdef EAGAIN
 	    if (errno == EAGAIN)
-		return 1;	       /* spurious */
+		return;	       /* spurious */
 #endif
 #ifdef EWOULDBLOCK
 	    if (errno == EWOULDBLOCK)
-		return 1;	       /* spurious */
+		return;	       /* spurious */
 #endif
 	    perror("read serial port");
 	    exit(1);
@@ -417,8 +417,6 @@ static int serial_select_result(int fd, int event)
 
 	notify_remote_exit(serial->frontend);
     }
-
-    return !finished;
 }
 
 static void serial_uxsel_setup(Serial serial)
@@ -462,7 +460,7 @@ static void serial_try_write(Serial serial)
 /*
  * Called to send data down the serial connection.
  */
-static int serial_send(void *handle, char *buf, int len)
+static int serial_send(void *handle, const char *buf, int len)
 {
     Serial serial = (Serial) handle;
 
@@ -591,6 +589,7 @@ Backend serial_backend = {
     serial_provide_logctx,
     serial_unthrottle,
     serial_cfg_info,
+    NULL /* test_for_upstream */,
     "serial",
     PROT_SERIAL,
     0

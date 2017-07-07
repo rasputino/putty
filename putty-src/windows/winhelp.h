@@ -41,6 +41,7 @@
 #define WINHELP_CTX_features_qtitle "features.qtitle:config-features-qtitle"
 #define WINHELP_CTX_features_dbackspace "features.dbackspace:config-features-dbackspace"
 #define WINHELP_CTX_features_charset "features.charset:config-features-charset"
+#define WINHELP_CTX_features_clearscroll "features.clearscroll:config-features-clearscroll"
 #define WINHELP_CTX_features_arabicshaping "features.arabicshaping:config-features-shaping"
 #define WINHELP_CTX_features_bidi "features.bidi:config-features-bidi"
 #define WINHELP_CTX_terminal_autowrap "terminal.autowrap:config-autowrap"
@@ -62,12 +63,6 @@
 #define WINHELP_CTX_window_erased "window.erased:config-erasetoscrollback"
 #define WINHELP_CTX_behaviour_closewarn "behaviour.closewarn:config-warnonclose"
 #define WINHELP_CTX_behaviour_altf4 "behaviour.altf4:config-altf4"
-/* Hot key enhancement by Kasper */
-#define WINHELP_CTX_behaviour_f1 "behaviour.f1:config-f1"
-#define WINHELP_CTX_behaviour_f2 "behaviour.f2:config-f2"
-#define WINHELP_CTX_behaviour_f3 "behaviour.f3:config-f3"
-#define WINHELP_CTX_behaviour_f4 "behaviour.f4:config-f4"
-/* end */
 #define WINHELP_CTX_behaviour_altspace "behaviour.altspace:config-altspace"
 #define WINHELP_CTX_behaviour_altonly "behaviour.altonly:config-altonly"
 #define WINHELP_CTX_behaviour_alwaysontop "behaviour.alwaysontop:config-alwaysontop"
@@ -83,11 +78,6 @@
 #define WINHELP_CTX_connection_username_from_env "connection.usernamefromenv:config-username-from-env"
 #define WINHELP_CTX_connection_keepalive "connection.keepalive:config-keepalive"
 #define WINHELP_CTX_connection_nodelay "connection.nodelay:config-nodelay"
-/* brian jiang */
-#define WINHELP_CTX_connection_autologin "connection..autologin:config-autologin"
-#define WINHELP_CTX_connection_autologinusername "connection..autologinusername:config-autologinusername"
-#define WINHELP_CTX_connection_autologinpasswd "connection..autologinpasswd:config-autologinpasswd"
-/* End, brian jiang */
 #define WINHELP_CTX_connection_ipversion "connection.ipversion:config-address-family"
 #define WINHELP_CTX_connection_tcpkeepalive "connection.tcpkeepalive:config-tcp-keepalives"
 #define WINHELP_CTX_connection_loghost "connection.loghost:config-loghost"
@@ -97,6 +87,7 @@
 #define WINHELP_CTX_proxy_dns "proxy.dns:config-proxy-dns"
 #define WINHELP_CTX_proxy_auth "proxy.auth:config-proxy-auth"
 #define WINHELP_CTX_proxy_command "proxy.command:config-proxy-command"
+#define WINHELP_CTX_proxy_logging "proxy.logging:config-proxy-logging"
 #define WINHELP_CTX_telnet_environ "telnet.environ:config-environ"
 #define WINHELP_CTX_telnet_oldenviron "telnet.oldenviron:config-oldenviron"
 #define WINHELP_CTX_telnet_passive "telnet.passive:config-ptelnet"
@@ -112,6 +103,7 @@
 #define WINHELP_CTX_ssh_compress "ssh.compress:config-ssh-comp"
 #define WINHELP_CTX_ssh_share "ssh.sharing:config-ssh-sharing"
 #define WINHELP_CTX_ssh_kexlist "ssh.kex.order:config-ssh-kex-order"
+#define WINHELP_CTX_ssh_hklist "ssh.hostkey.order:config-ssh-hostkey-order"
 #define WINHELP_CTX_ssh_kex_repeat "ssh.kex.repeat:config-ssh-kex-rekey"
 #define WINHELP_CTX_ssh_kex_manual_hostkeys "ssh.kex.manualhostkeys:config-ssh-kex-manual-hostkeys"
 #define WINHELP_CTX_ssh_auth_bypass "ssh.auth.bypass:config-ssh-noauth"

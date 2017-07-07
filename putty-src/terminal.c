@@ -66,7 +66,7 @@
 
 #define has_compat(x) ( ((CL_##x)&term->compatibility_level) != 0 )
 
-char *EMPTY_WINDOW_TITLE = "";
+const char *EMPTY_WINDOW_TITLE = "";
 
 const char sco2ansicolour[] = { 0, 4, 2, 6, 1, 5, 3, 7 };
 
@@ -93,14 +93,6 @@ const wchar_t sel_nl[] = SEL_NL;
  */
 #define CSET_OF(chr) (DIRECT_CHAR(chr)||DIRECT_FONT(chr) ? (chr)&CSET_MASK : 0)
 
-/* Added by Kasper */
-void duplicate_session_login(Terminal *term);
-/* end, Kasper */
-
-/* Autologin Enhancement by Alan ZHU*/
-static int in_autologin = 1;
-static void term_auto_login(Terminal *term, unsigned char c);
-/* End, Alan ZHU*/
 /*
  * Internal prototypes.
  */
@@ -1359,7 +1351,7 @@ void term_pwron(Terminal *term, int clear)
 {
     power_on(term, clear);
     if (term->ldisc)		       /* cause ldisc to notice changes */
-	ldisc_send(term->ldisc, NULL, 0, 0);
+	ldisc_echoedit_update(term->ldisc);
     term->disptop = 0;
     deselect(term);
     term_update(term);
@@ -1411,6 +1403,7 @@ void term_copy_stuff_from_conf(Terminal *term)
     term->no_remote_charset = conf_get_int(term->conf, CONF_no_remote_charset);
     term->no_remote_resize = conf_get_int(term->conf, CONF_no_remote_resize);
     term->no_remote_wintitle = conf_get_int(term->conf, CONF_no_remote_wintitle);
+    term->no_remote_clearscroll = conf_get_int(term->conf, CONF_no_remote_clearscroll);
     term->rawcnp = conf_get_int(term->conf, CONF_rawcnp);
     term->rect_select = conf_get_int(term->conf, CONF_rect_select);
     term->remote_qtitle_action = conf_get_int(term->conf, CONF_remote_qtitle_action);
@@ -2444,7 +2437,7 @@ static void erase_lots(Terminal *term,
 
     /* After an erase of lines from the top of the screen, we shouldn't
      * bring the lines back again if the terminal enlarges (since the user or
-     * application has explictly thrown them away). */
+     * application has explicitly thrown them away). */
     if (erasing_lines_from_top && !(term->alt_which))
 	term->tempsblines = 0;
 }
@@ -2583,7 +2576,7 @@ static void toggle_mode(Terminal *term, int mode, int query, int state)
 	  case 10:		       /* DECEDM: set local edit mode */
 	    term->term_editing = state;
 	    if (term->ldisc)	       /* cause ldisc to notice changes */
-		ldisc_send(term->ldisc, NULL, 0, 0);
+		ldisc_echoedit_update(term->ldisc);
 	    break;
 	  case 25:		       /* DECTCEM: enable/disable cursor */
 	    compatibility2(OTHER, VT220);
@@ -2647,7 +2640,7 @@ static void toggle_mode(Terminal *term, int mode, int query, int state)
 	  case 12:		       /* SRM: set echo mode */
 	    term->term_echoing = !state;
 	    if (term->ldisc)	       /* cause ldisc to notice changes */
-		ldisc_send(term->ldisc, NULL, 0, 0);
+		ldisc_echoedit_update(term->ldisc);
 	    break;
 	  case 20:		       /* LNM: Return sends ... */
 	    term->cr_lf_return = state;
@@ -2769,13 +2762,6 @@ static void term_out(Terminal *term)
 	     */
 	    if (term->logtype == LGTYP_DEBUG && term->logctx)
 		logtraffic(term->logctx, (unsigned char) c, LGTYP_DEBUG);
-
-	    /* Autologin Enhancement by Alan ZHU*/
-	    if (in_autologin && conf_get_int(term->conf, CONF_auto_login) &&
-		   (conf_get_int(term->conf, CONF_protocol) != PROT_SSH)) { // For TELNET etc...
-            term_auto_login(term, (unsigned char) c);
-		}
-	    /* End, Alan ZHU*/
 	} else {
 	    c = unget;
 	    unget = -1;
@@ -3377,7 +3363,7 @@ static void term_out(Terminal *term)
 		    compatibility(VT100);
 		    power_on(term, TRUE);
 		    if (term->ldisc)   /* cause ldisc to notice changes */
-			ldisc_send(term->ldisc, NULL, 0, 0);
+			ldisc_echoedit_update(term->ldisc);
 		    if (term->reset_132) {
 			if (!term->no_remote_resize)
 			    request_resize(term->frontend, 80, term->rows);
@@ -3621,7 +3607,8 @@ static void term_out(Terminal *term)
 			    if (i == 3) {
 				/* Erase Saved Lines (xterm)
 				 * This follows Thomas Dickey's xterm. */
-				term_clrsb(term);
+                                if (!term->no_remote_clearscroll)
+                                    term_clrsb(term);
 			    } else {
 				i++;
 				if (i > 3)
@@ -3980,7 +3967,8 @@ static void term_out(Terminal *term)
 
 			    switch (term->esc_args[0]) {
 				int x, y, len;
-				char buf[80], *p;
+				char buf[80];
+                                const char *p;
 			      case 1:
 				set_iconic(term->frontend, FALSE);
 				break;
@@ -4339,7 +4327,7 @@ static void term_out(Terminal *term)
 			    for (i = 1; i < term->esc_nargs; i++) {
 				if (i != 1)
 				    strcat(term->id_string, ";");
-				sprintf(lbuf, "%d", term->esc_args[i]);
+				sprintf(lbuf, "%u", term->esc_args[i]);
 				strcat(term->id_string, lbuf);
 			    }
 			    strcat(term->id_string, "c");
@@ -4739,7 +4727,7 @@ static void term_out(Terminal *term)
     }
 
     term_print_flush(term);
-    if (term->logflush)
+    if (term->logflush && term->logctx)
 	logflush(term->logctx);
 }
 
@@ -5459,7 +5447,7 @@ typedef struct {
 static void clip_addchar(clip_workbuf *b, wchar_t chr, int attr)
 {
     if (b->bufpos >= b->buflen) {
-	b->buflen += 128;
+	b->buflen *= 2;
 	b->textbuf = sresize(b->textbuf, b->buflen, wchar_t);
 	b->textptr = b->textbuf + b->bufpos;
 	b->attrbuf = sresize(b->attrbuf, b->buflen, int);
@@ -5644,70 +5632,6 @@ void term_copyall(Terminal *term)
     bottom.x = term->cols;
     clipme(term, top, bottom, 0, TRUE);
 }
-
-/* Added by Kasper */
-void duplicate_session_login(Terminal *term)
-{  
-    char b[2048];
-    char c[30], *cl;
-    int freecl = FALSE;
-    BOOL inherit_handles;
-    STARTUPINFO si;
-    PROCESS_INFORMATION pi;
-    HANDLE filemap = NULL;
-       
-    /*
-	 * Allocate a file-mapping memory chunk for the
-	 * config structure.
-	*/
-    SECURITY_ATTRIBUTES sa;
-	void *p;
-	int size;
-	
-	size = conf_serialised_size(term->conf);
-	
-    sa.nLength = sizeof(sa);
-	sa.lpSecurityDescriptor = NULL;
-	sa.bInheritHandle = TRUE;
-	filemap = CreateFileMapping(INVALID_HANDLE_VALUE,
-                                &sa,
-								PAGE_READWRITE,
-								0, size, NULL);
-	if (filemap && filemap != INVALID_HANDLE_VALUE) 
-	{
-	     p = (MapViewOfFile(filemap, FILE_MAP_WRITE, 0, 0, size));
-	     if (p) 
-	     {   
-	     	
-
-			conf_serialise(term->conf, p);  /* structure copy */
-	        UnmapViewOfFile(p);
-	     }	     	     
-	}
-	inherit_handles = TRUE;
-	sprintf(c, "putty &%p:%u", filemap, (unsigned)size);
-	cl = c;
-		 
-	GetModuleFileName(NULL, b, sizeof(b) - 1);
-	si.cb = sizeof(si);
-	si.lpReserved = NULL;
-	si.lpDesktop = NULL;
-	si.lpTitle = NULL;
-	si.dwFlags = 0;
-	si.cbReserved2 = 0;
-	si.lpReserved2 = NULL;
-	CreateProcess(b, cl, NULL, NULL, inherit_handles,
-			 NORMAL_PRIORITY_CLASS, NULL, NULL, &si, &pi);
-			 CloseHandle(pi.hProcess);
-             CloseHandle(pi.hThread);
-		 
-	if (filemap)
-		CloseHandle(filemap);
-	if (freecl)
-	     sfree(cl);
-}
-/* end */
-
 
 /*
  * The wordness array is mainly for deciding the disposition of the
@@ -6158,7 +6082,8 @@ void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
 	    } else if (c <= 223 && r <= 223) {
 		len = sprintf(abuf, "\033[M%c%c%c", encstate + 32, c + 32, r + 32);
 	    }
-	    ldisc_send(term->ldisc, abuf, len, 0);
+            if (len > 0)
+                ldisc_send(term->ldisc, abuf, len, 0);
 	}
 	return;
     }
@@ -6192,6 +6117,19 @@ void term_mouse(Terminal *term, Mouse_Button braw, Mouse_Button bcooked,
 	sel_spread(term);
     } else if ((bcooked == MBT_SELECT && a == MA_DRAG) ||
 	       (bcooked == MBT_EXTEND && a != MA_RELEASE)) {
+        if (a == MA_DRAG &&
+            (term->selstate == NO_SELECTION || term->selstate == SELECTED)) {
+            /*
+             * This can happen if a front end has passed us a MA_DRAG
+             * without a prior MA_CLICK. OS X GTK does so, for
+             * example, if the initial button press was eaten by the
+             * WM when it activated the window in the first place. The
+             * nicest thing to do in this situation is to ignore
+             * further drags, and wait for the user to click in the
+             * window again properly if they want to select.
+             */
+            return;
+        }
 	if (term->selstate == ABOUT_TO && poseq(term->selanchor, selpoint))
 	    return;
 	if (bcooked == MBT_EXTEND && a != MA_DRAG &&
@@ -6435,9 +6373,11 @@ void term_set_focus(Terminal *term, int has_focus)
  */
 char *term_get_ttymode(Terminal *term, const char *mode)
 {
-    char *val = NULL;
+    const char *val = NULL;
     if (strcmp(mode, "ERASE") == 0) {
 	val = term->bksp_is_delete ? "^?" : "^H";
+    } else if (strcmp(mode, "IUTF8") == 0) {
+	val = frontend_is_utf8(term->frontend) ? "yes" : "no";
     }
     /* FIXME: perhaps we should set ONLCR based on lfhascr as well? */
     /* FIXME: or ECHO and friends based on local echo state? */
@@ -6455,7 +6395,7 @@ struct term_userpass_state {
  * input.
  */
 int term_get_userpass_input(Terminal *term, prompts_t *p,
-			    unsigned char *in, int inlen)
+			    const unsigned char *in, int inlen)
 {
     struct term_userpass_state *s = (struct term_userpass_state *)p->data;
     if (!s) {
@@ -6568,595 +6508,4 @@ int term_get_userpass_input(Terminal *term, prompts_t *p,
 	p->data = NULL;
 	return +1; /* all done */
     }
-}
-/* Autologin Enhancement by Alan ZHU*/
-/*
- * term_auto_login(), to implement automate login function.
- */
-#define check_buf_size 64
-#define resp_buf_size  64
-static void term_auto_login(Terminal *term, unsigned char c)
-{
-    static enum {autologin_none, autologin_username_sent}
-         autologin_state   = autologin_none;
-    static int check_count = 0;
-
-    /* loop buffer
-     * if begin_index = end_index, then buffer is empty
-     * if (end_index + 1) mod check_buf_size = begin_index, then buffer is full
-     */
-    static unsigned char check_buf[check_buf_size];
-    static int begin_index = 0;
-    static int end_index = 0;
-
-    unsigned char * p_match;
-    unsigned char * p;
-    int match_index;
-    int match_length;
-    int is_match;
-    unsigned char resp_buf[resp_buf_size];
-
-    /* if check failed to many times, escape autologin */
-    if (++check_count > 2000)
-	{
-        autologin_state = autologin_none;
-        in_autologin = 0;
-        return;
-    }
-
-    /* add c to check_buf */
-    check_buf[end_index] = c;
-    end_index = (end_index + 1) % check_buf_size;
-
-    if (end_index == begin_index)
-	{
-        begin_index = (begin_index + 1) % check_buf_size;
-    }
-    /* add end */
-
-    /* get the match string */
-    switch (autologin_state)
-	{
-      case autologin_none:
-        p_match = "ogin:"; /*cfg.login_user_name;*/
-        break;
-      case autologin_username_sent:
-        p_match = "assword:"; /*acfg.login_user_passwd;*/
-        break;
-    }
-
-    match_length = strlen (p_match);
-
-    /* begin match */
-    if ( ((end_index + check_buf_size - begin_index) % check_buf_size) >= match_length)
-	{
-        match_index = end_index - 1;
-
-        if (match_index < 0)
-		{
-            match_index = check_buf_size - 1;
-        }
-
-        p = p_match + match_length - 1;
-
-        is_match = 1;
-
-        while (p >= p_match)
-		{
-            if (*p != check_buf[match_index])
-			{
-                is_match = 0;
-                break;
-            }
-            p--;
-            match_index = match_index - 1;
-            if (match_index < 0)
-			{
-                match_index = check_buf_size - 1;
-            }
-        }
-        if (is_match == 0)
-		{
-            begin_index = (begin_index + 1) % check_buf_size;
-        }
-		else
-		{
-            begin_index = end_index = 0;
-
-            switch (autologin_state)
-			{
-              case autologin_none:
-                p = conf_get_str(term->conf, CONF_login_user_name);
-                autologin_state = autologin_username_sent;
-                break;
-              case autologin_username_sent:
-                p = conf_get_str(term->conf, CONF_login_user_passwd);
-                autologin_state = autologin_none;
-                in_autologin = 0;
-                break;
-            }
-
-            strncpy (resp_buf, p, resp_buf_size - 2 - 3);
-            resp_buf[resp_buf_size - 1]= '\0';
-            strncat (resp_buf, "\n", 2);
-            resp_buf[resp_buf_size - 1]= '\0';
-            ldisc_send(term->ldisc, resp_buf, strlen (resp_buf), 0);
-
-        }
-    }
-}
-
-static BOOL string_match(Terminal *term, unsigned char c, unsigned char *p_match)
-{
-    static int check_count = 0;
-
-    /* loop buffer
-     * if begin_index = end_index, then buffer is empty
-     * if (end_index + 1) mod check_buf_size = begin_index, then buffer is full
-     */
-    static unsigned char check_buf[check_buf_size];
-    static int begin_index = 0;
-    static int end_index = 0;
-
-    unsigned char * p;
-    int match_index;
-    int match_length;
-    int is_match;
-
-    /* if check failed to many times, escape auto login */
-    if (++check_count > 2000)
-	{
-		in_autologin = 0;
-        return FALSE;
-    }
-
-    /* add c to check_buf */
-    check_buf[end_index] = c;
-    end_index = (end_index + 1) % check_buf_size;
-
-    if (end_index == begin_index)
-    {
-        begin_index = (begin_index + 1) % check_buf_size;
-    }
-    /* add end */
-
-    /* get the match string */
-    match_length = strlen (p_match);
-
-    /* begin match */
-    if ( ((end_index + check_buf_size - begin_index) % check_buf_size) >= match_length)
-    {
-        match_index = end_index - 1;
-
-        if (match_index < 0)
-        {
-            match_index = check_buf_size - 1;
-        }
-
-        p = p_match + match_length - 1;
-
-        is_match = 1;
-
-        while (p >= p_match)
-        {
-            if (*p != check_buf[match_index])
-            {
-                is_match = 0;
-                break;
-            }
-            p--;
-            match_index = match_index - 1;
-            if (match_index < 0)
-            {
-                match_index = check_buf_size - 1;
-            }
-        }
-
-        if (is_match == 0) // failed to match
-        {
-            begin_index = (begin_index + 1) % check_buf_size;
-            return FALSE;
-        }
-        else // successful to match
-        {
-            begin_index = end_index = 0;
-            return TRUE;
-        }
-    }
-   return FALSE;
-}
-
-
-/* brian Jiang */
-
-static void my_addchar(clip_workbuf *b, wchar_t chr)
-{
-    if (b->bufpos >= b->buflen)
-	{
-	b->buflen += 128;
-	b->textbuf = sresize(b->textbuf, b->buflen, wchar_t);
-	b->textptr = b->textbuf + b->bufpos;
-    }
-    *b->textptr++ = chr;
-    b->bufpos++;
-}
-
-
-
-static wchar_t *get_line_wchar_ptr(Terminal *term, int y, clip_workbuf buf)
-{
-   termline *ldata = lineptr(y);
-   int topx = 0;
-
-   /* Reset the line buffer */
-   buf.bufpos = 0;
-   buf.textptr = buf.textbuf;
-
-
-  while (topx < term->cols)
-  {
-    wchar_t cbuf[16], *p;
-    int set, c;
-    int x = topx;
-
-
-    if (ldata->chars[x].chr == UCSWIDE)
-    {
-      x++;
-      continue;
-    }
-
-    while (1)
-    {
-      int uc = ldata->chars[x].chr;
-
-      switch (uc & CSET_MASK)
-      {
-      case CSET_LINEDRW:
-        if (!term->rawcnp)
-        {
-          uc = term->ucsdata->unitab_xterm[uc & 0xFF];
-          break;
-        }
-      case CSET_ASCII:
-        uc = term->ucsdata->unitab_line[uc & 0xFF];
-        break;
-      case CSET_SCOACS:
-        uc = term->ucsdata->unitab_scoacs[uc&0xFF];
-        break;
-      }
-      switch (uc & CSET_MASK)
-      {
-      case CSET_ACP:
-        uc = term->ucsdata->unitab_font[uc & 0xFF];
-        break;
-      case CSET_OEMCP:
-        uc = term->ucsdata->unitab_oemcp[uc & 0xFF];
-        break;
-      }
-
-      set = (uc & CSET_MASK);
-      c = (uc & ~CSET_MASK);
-      cbuf[0] = uc;
-      cbuf[1] = 0;
-
-      if (DIRECT_FONT(uc))
-      {
-        if (c >= ' ' && c != 0x7F)
-        {
-          char buf[4];
-          WCHAR wbuf[4];
-          int rv;
-          if (is_dbcs_leadbyte(term->ucsdata->font_codepage, (BYTE) c))
-          {
-            buf[0] = c;
-            buf[1] = (char) (0xFF & ldata->chars[topx + 1].chr);
-            rv = mb_to_wc(term->ucsdata->font_codepage, 0, buf, 2, wbuf, 4);
-            topx++;
-          }
-          else
-          {
-            buf[0] = c;
-            rv = mb_to_wc(term->ucsdata->font_codepage, 0, buf, 1, wbuf, 4);
-          }
-          if (rv > 0)
-          {
-            memcpy(cbuf, wbuf, rv * sizeof(wchar_t));
-            cbuf[rv] = 0;
-          }
-        }
-      }
-
-      for (p = cbuf; *p; p++)
-      {
-        my_addchar(&buf, *p);
-      }
-
-      if (ldata->chars[x].cc_next)
-      {
-        x += ldata->chars[x].cc_next;
-      }
-      else
-      {
-        break;
-      }
-    }
-    topx++;
-
-  }
-  unlineptr(ldata);
-
-  my_addchar(&buf, 0);
-
-  return buf.textbuf;
-}
-
-wchar_t *my_StrRStrW(wchar_t *lpFirst, wchar_t *lpLast, wchar_t *lpSrch)
-{
-  wchar_t *pos = StrRStrIW(lpFirst, lpLast , lpSrch);
-  int len = wcslen(lpSrch);
-
-  if (pos == NULL){
-    return NULL;
-  }else{
-    do{
-      if (wcsncmp(pos, lpSrch, len) == 0 ) break;
-
-      pos = StrRStrIW(lpFirst, pos, lpSrch);
-
-      if (pos == NULL) break;
-
-    } while (1);
-   return pos;
-  }
-}
-
-int term_search(Terminal *term, wchar_t *pat, int direction, int match_case, int match_word)
-{
-  /* direction: +1 forward
-                else backward
-     match_case: 0 ignore case
-                 else match case
-     match_word: 0 not word
-                 else match word
-
-
-     return value: 0: success.
-                   +1: reach end.
-                   -1: reach begin
-  */
-  int ret = 0;
-  pos top;
-  pos bottom;
-  pos from;
-  tree234 *screen = term->screen;
-
-  clip_workbuf buf;
-  wchar_t *textbuf;
-  wchar_t *pos;
-  wchar_t *match_end;
-  int start;
-  int pat_len = wcslen(pat);
-
-  buf.buflen = term->cols + 8;
-  buf.bufpos = 0;
-  buf.textptr = buf.textbuf = snewn(buf.buflen, wchar_t);
-
-  top.y = -sblines(term);
-  top.x = 0;
-  bottom.y = find_last_nonempty_line(term, screen);
-  bottom.x = term->cols;
-
-  if (direction == 1)
-  {
-    /* forward */
-    int i;
-    ret = 1;
-
-    if (term->selstate != NO_SELECTION)
-    {
-      from.y = term->selstart.y;
-      from.x = term->selstart.x + 1;
-    }
-    else
-    {
-      from.y = term->disptop;
-      from.x = 0;
-    }
-
-    start = from.x;
-
-    for (i = from.y; i <= bottom.y; i++)
-    {
-
-      textbuf = get_line_wchar_ptr(term, i, buf);
-
-      if (match_case == 0)
-      {
-        /* ignore case */
-        pos = StrStrIW(textbuf + start, pat);
-      }
-      else
-      {
-        pos = StrStrW(textbuf + start, pat);
-      }
-
-      if (start !=0 )
-      {
-        start = 0;
-      }
-
-      if (pos != NULL)
-      {
-        int offset = i - term->disptop;
-
-        if (match_word != 0)
-        {
-          /* match word */
-
-          do
-          {
-            match_end = pos + pat_len;
-
-            if (((textbuf == pos) || (!iswalpha(*(pos - 1)) && !iswdigit(*(pos - 1))))
-                &&
-                ((*match_end == 0) || (!iswalpha(*match_end) && !iswdigit(*match_end))))
-            {
-              break;
-            }
-
-            if (match_case == 0)
-            {
-              pos = StrStrIW(pos +1, pat);
-            }
-            else
-            {
-              pos = StrStrW(pos +1, pat);
-            }
-
-            if (pos == NULL) break;
-
-          } while (1);
-
-          if (pos == NULL) continue;
-        }
-
-        if ((offset >= 0) && (offset < term->rows))
-        {
-          /* do nothing */
-        }
-        else
-        {
-          /* sroll it */
-          term_scroll(term, +1, i - top.y - (term->rows / 2));
-        }
-
-        term->selstart.x = pos - textbuf;
-        term->selend.x = term->selstart.x + pat_len;
-        term->selstart.y = i;
-        term->selend.y =  i;
-        term->selstate = SELECTED;
-
-        term_update(term);
-
-        ret = 0;
-        break;
-      }
-
-    }
-
-  }
-  else
-  {
-    /* backward */
-    int adjust = 1;
-    wchar_t *lpLast;
-    int i;
-    ret = -1;
-
-    if (term->selstate != NO_SELECTION)
-    {
-      from.y = term->selstart.y;
-      from.x = term->selstart.x;
-    }
-    else
-    {
-      from.y = term->disptop + term->rows -1;
-      from.x = term->cols;
-    }
-
-    for (i = from.y; i >= top.y; i--)
-    {
-
-      textbuf = get_line_wchar_ptr(term, i, buf);
-
-      if (adjust == 1)
-      {
-        lpLast = textbuf + from.x;
-        adjust = 0;
-      }
-      else
-      {
-        lpLast = NULL;
-      }
-
-      if (match_case == 0)
-      {
-        /* ignore case */
-        pos = StrRStrIW(textbuf, lpLast , pat);
-      }
-      else
-      {
-        pos = StrRStrW(textbuf, lpLast , pat);
-      }
-
-      if (pos != NULL)
-      {
-        int offset = i - term->disptop;
-
-        if (match_word != 0)
-        {
-          /* match word */
-
-          do
-          {
-            match_end = pos + pat_len;
-
-            if (((textbuf == pos) || (!iswalpha(*(pos - 1)) && !iswdigit(*(pos - 1))))
-                &&
-                ((*match_end == 0) || (!iswalpha(*match_end) && !iswdigit(*match_end))))
-            {
-              break;
-            }
-
-            if (match_case == 0)
-            {
-              /* ignore case */
-              pos = StrRStrIW(textbuf, pos , pat);
-            }
-            else
-            {
-              pos = StrRStrW(textbuf, pos , pat);
-            }
-
-            if (pos == NULL) break;
-
-          } while (1);
-
-          if (pos == NULL) continue;
-        }
-
-
-        /*wchar_t b1[20] = L"aaJCCJaaa";
-        if (StrRStrIW(b1, b1+2, L"JCCJ") != NULL){
-          MessageBox(NULL, "ok", "ok", MB_OK);
-          }*/
-
-        if ((offset >= 0) && (offset < term->rows))
-        {
-          /* do nothing */
-        }
-        else
-        {
-          /* sroll it */
-          term_scroll(term, +1, i - top.y - (term->rows / 2));
-        }
-
-        term->selstart.x = pos - textbuf;
-        term->selend.x = term->selstart.x + pat_len;
-        term->selstart.y = i;
-        term->selend.y =  i;
-        term->selstate = SELECTED;
-
-        term_update(term);
-
-        ret = 0;
-        break;
-      }
-    }
-  }
-
-  sfree(buf.textbuf);
-
-  return ret;
 }

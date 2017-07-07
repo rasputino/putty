@@ -10,6 +10,10 @@
 #include <limits.h>
 #include <assert.h>
 
+#ifdef __WINE__
+#define NO_MULTIMON                    /* winelib doesn't have this */
+#endif
+
 #ifndef NO_MULTIMON
 #define COMPILE_MULTIMON_STUBS
 #endif
@@ -42,15 +46,6 @@
 #define IDM_RECONF    0x0050
 #define IDM_CLRSB     0x0060
 #define IDM_RESET     0x0070
-
-/* One Key Cleaning Screen by Kasper */
-#define IDM_CLEAN     0x0080
-
-/* Title change by Kasper */
-#define IDM_CHNTITLE  0x0090
-
-/* end */
-
 #define IDM_HELP      0x0140
 #define IDM_ABOUT     0x0150
 #define IDM_SAVEDSESS 0x0160
@@ -59,10 +54,6 @@
 #define IDM_PASTE     0x0190
 #define IDM_SPECIALSEP 0x0200
 
-/* Brian Jiang */
-#define IDM_LOG_SESSION      0x0230
-#define IDM_TURNOFF_LOG      0x0240
-#define IDM_FIND             0x0250
 #define IDM_SPECIAL_MIN 0x0400
 #define IDM_SPECIAL_MAX 0x0800
 
@@ -238,8 +229,13 @@ const int share_can_be_downstream = TRUE;
 const int share_can_be_upstream = TRUE;
 
 /* Dummy routine, only required in plink. */
-void ldisc_update(void *frontend, int echo, int edit)
+void frontend_echoedit_update(void *frontend, int echo, int edit)
 {
+}
+
+int frontend_is_utf8(void *frontend)
+{
+    return ucsdata.line_codepage == CP_UTF8;
 }
 
 char *get_ttymode(void *frontend, const char *mode)
@@ -355,13 +351,20 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     HRESULT hr;
     int guess_width, guess_height;
 
+    dll_hijacking_protection();
+
     hinst = inst;
     hwnd = NULL;
     flags = FLAG_VERBOSE | FLAG_INTERACTIVE;
 
     sk_init();
 
-    InitCommonControls();
+    init_common_controls();
+
+    /* Set Explicit App User Model Id so that jump lists don't cause
+       PuTTY to hang on to removable media. */
+
+    set_explicit_app_user_model_id();
 
     /* Ensure a Maximize setting in Explorer doesn't maximise the
      * config box. */
@@ -405,21 +408,6 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     }
 
     /*
-     * Protect our process
-     */
-    {
-#ifndef UNPROTECT
-        char *error = NULL;
-        if (! setprocessacl(error)) {
-            char *message = dupprintf("Could not restrict process ACL: %s",
-                                      error);
-	    logevent(NULL, message);
-            sfree(message);
-	    sfree(error);
-	}
-#endif
-    }
-    /*
      * Process the command line.
      */
     {
@@ -448,11 +436,20 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 	 * Process a couple of command-line options which are more
 	 * easily dealt with before the line is broken up into words.
 	 * These are the old-fashioned but convenient @sessionname and
-	 * the internal-use-only &sharedmemoryhandle, neither of which
-	 * are combined with anything else.
+	 * the internal-use-only &sharedmemoryhandle, plus the &R
+	 * prefix for -restrict-acl, all of which are used by PuTTYs
+	 * auto-launching each other via System-menu options.
 	 */
 	while (*p && isspace(*p))
 	    p++;
+        if (*p == '&' && p[1] == 'R' &&
+            (!p[2] || p[2] == '@' || p[2] == '&')) {
+            /* &R restrict-acl prefix */
+            restrict_process_acl();
+            restricted_acl = TRUE;
+            p += 2;
+        }
+
 	if (*p == '@') {
             /*
              * An initial @ means that the whole of the rest of the
@@ -490,7 +487,11 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 		cleanup_exit(0);
 	    }
 	    allow_launch = TRUE;
-	} else {
+	} else if (!*p) {
+            /* Do-nothing case for an empty command line - or rather,
+             * for a command line that's empty _after_ we strip off
+             * the &R prefix. */
+        } else {
 	    /*
 	     * Otherwise, break up the command line and deal with
 	     * it sensibly.
@@ -512,39 +513,22 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 		    i++;	       /* skip next argument */
 		} else if (ret == 1) {
 		    continue;	       /* nothing further needs doing */
-		} else if (!strcmp(p, "-cleanup") ||
-			   !strcmp(p, "-cleanup-during-uninstall")) {
+		} else if (!strcmp(p, "-cleanup")) {
 		    /*
 		     * `putty -cleanup'. Remove all registry
 		     * entries associated with PuTTY, and also find
 		     * and delete the random seed file.
 		     */
 		    char *s1, *s2;
-		    /* Are we being invoked from an uninstaller? */
-		    if (!strcmp(p, "-cleanup-during-uninstall")) {
-			s1 = dupprintf("Remove saved sessions and random seed file?\n"
-				       "\n"
-				       "If you hit Yes, ALL Registry entries associated\n"
-				       "with %s will be removed, as well as the\n"
-				       "random seed file. THIS PROCESS WILL\n"
-				       "DESTROY YOUR SAVED SESSIONS.\n"
-				       "(This only affects the currently logged-in user.)\n"
-				       "\n"
-				       "If you hit No, uninstallation will proceed, but\n"
-				       "saved sessions etc will be left on the machine.",
-				       appname);
-			s2 = dupprintf("%s Uninstallation", appname);
-		    } else {
-			s1 = dupprintf("This procedure will remove ALL Registry entries\n"
-				       "associated with %s, and will also remove\n"
-				       "the random seed file. (This only affects the\n"
-				       "currently logged-in user.)\n"
-				       "\n"
-				       "THIS PROCESS WILL DESTROY YOUR SAVED SESSIONS.\n"
-				       "Are you really sure you want to continue?",
-				       appname);
-			s2 = dupprintf("%s Warning", appname);
-		    }
+		    s1 = dupprintf("This procedure will remove ALL Registry entries\n"
+				   "associated with %s, and will also remove\n"
+				   "the random seed file. (This only affects the\n"
+				   "currently logged-in user.)\n"
+				   "\n"
+				   "THIS PROCESS WILL DESTROY YOUR SAVED SESSIONS.\n"
+				   "Are you really sure you want to continue?",
+				   appname);
+		    s2 = dupprintf("%s Warning", appname);
 		    if (message_box(s1, s2,
 				    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
 				    HELPCTXID(option_cleanup)) == IDYES) {
@@ -838,23 +822,15 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 	    AppendMenu(m, MF_SEPARATOR, 0, 0);
 	    AppendMenu(m, MF_ENABLED, IDM_SHOWLOG, "&Event Log");
 	    AppendMenu(m, MF_SEPARATOR, 0, 0);
-        /* brian jiang */
-	    AppendMenu(m, MF_ENABLED, IDM_FIND, "&Find");
-	    AppendMenu(m, MF_SEPARATOR, 0, 0);
 	    AppendMenu(m, MF_ENABLED, IDM_NEWSESS, "Ne&w Session...");
 	    AppendMenu(m, MF_ENABLED, IDM_DUPSESS, "&Duplicate Session");
-	    AppendMenu(m, MF_POPUP | MF_ENABLED, (UINT) savedsess_menu,
+	    AppendMenu(m, MF_POPUP | MF_ENABLED, (UINT_PTR) savedsess_menu,
 		       "Sa&ved Sessions");
 	    AppendMenu(m, MF_ENABLED, IDM_RECONF, "Chan&ge Settings...");
 	    AppendMenu(m, MF_SEPARATOR, 0, 0);
 	    AppendMenu(m, MF_ENABLED, IDM_COPYALL, "C&opy All to Clipboard");
 	    AppendMenu(m, MF_ENABLED, IDM_CLRSB, "C&lear Scrollback");
 	    AppendMenu(m, MF_ENABLED, IDM_RESET, "Rese&t Terminal");
-	    /* One Key Cleaning Screen by Kasper */
-	    AppendMenu(m, MF_ENABLED, IDM_CLEAN, "Clean Sc&reen");
-        AppendMenu(m, MF_SEPARATOR, 0, 0);
-        AppendMenu(m, MF_ENABLED, IDM_CHNTITLE, "Change &Title");
-	    /* end */
 	    AppendMenu(m, MF_SEPARATOR, 0, 0);
 	    AppendMenu(m, (conf_get_int(conf, CONF_resize_action)
 			   == RESIZE_DISABLED) ? MF_GRAYED : MF_ENABLED,
@@ -866,6 +842,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 	    AppendMenu(m, MF_ENABLED, IDM_ABOUT, str);
 	    sfree(str);
 	}
+    }
+
+    if (restricted_acl) {
+	logevent(NULL, "Running with restricted process ACL");
     }
 
     start_backend();
@@ -1075,7 +1055,7 @@ void update_specials_menu(void *frontend)
 		saved_menu = new_menu; /* XXX lame stacking */
 		new_menu = CreatePopupMenu();
 		AppendMenu(saved_menu, MF_POPUP | MF_ENABLED,
-			   (UINT) new_menu, specials[i].name);
+			   (UINT_PTR) new_menu, specials[i].name);
 		break;
 	      case TS_EXITMENU:
 		nesting--;
@@ -1100,13 +1080,14 @@ void update_specials_menu(void *frontend)
     for (j = 0; j < lenof(popup_menus); j++) {
 	if (specials_menu) {
 	    /* XXX does this free up all submenus? */
-	    DeleteMenu(popup_menus[j].menu, (UINT)specials_menu, MF_BYCOMMAND);
+	    DeleteMenu(popup_menus[j].menu, (UINT_PTR)specials_menu,
+                       MF_BYCOMMAND);
 	    DeleteMenu(popup_menus[j].menu, IDM_SPECIALSEP, MF_BYCOMMAND);
 	}
 	if (new_menu) {
 	    InsertMenu(popup_menus[j].menu, IDM_SHOWLOG,
 		       MF_BYCOMMAND | MF_POPUP | MF_ENABLED,
-		       (UINT) new_menu, "S&pecial Command");
+		       (UINT_PTR) new_menu, "S&pecial Command");
 	    InsertMenu(popup_menus[j].menu, IDM_SHOWLOG,
 		       MF_BYCOMMAND | MF_SEPARATOR, IDM_SPECIALSEP, 0);
 	}
@@ -1171,7 +1152,7 @@ void set_raw_mouse_mode(void *frontend, int activate)
 /*
  * Print a message box and close the connection.
  */
-void connection_fatal(void *frontend, char *fmt, ...)
+void connection_fatal(void *frontend, const char *fmt, ...)
 {
     va_list ap;
     char *stuff, morestuff[100];
@@ -1193,7 +1174,7 @@ void connection_fatal(void *frontend, char *fmt, ...)
 /*
  * Report an error at the command-line parsing stage.
  */
-void cmdline_error(char *fmt, ...)
+void cmdline_error(const char *fmt, ...)
 {
     va_list ap;
     char *stuff, morestuff[100];
@@ -1553,7 +1534,8 @@ static void init_fonts(int pick_width, int pick_height)
 	if (cset == OEM_CHARSET)
 	    ucsdata.font_codepage = GetOEMCP();
 	else
-	    if (TranslateCharsetInfo ((DWORD *) cset, &info, TCI_SRCCHARSET))
+	    if (TranslateCharsetInfo ((DWORD *)(ULONG_PTR)cset,
+                                      &info, TCI_SRCCHARSET))
 		ucsdata.font_codepage = info.ciACP;
 	else
 	    ucsdata.font_codepage = -1;
@@ -1718,7 +1700,7 @@ void request_resize(void *frontend, int w, int h)
 {
     int width, height;
 
-    /* If the window is maximized supress resizing attempts */
+    /* If the window is maximized suppress resizing attempts */
     if (IsZoomed(hwnd)) {
 	if (conf_get_int(conf, CONF_resize_action) == RESIZE_TERM)
 	    return;
@@ -2166,21 +2148,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 	  case IDM_SHOWLOG:
 	    showeventlog(hwnd);
 	    break;
-      /* brian Jiang */
-      case IDM_FIND:
-        show_find(hwnd);
-        break;
 	  case IDM_NEWSESS:
 	  case IDM_DUPSESS:
 	  case IDM_SAVEDSESS:
 	    {
 		char b[2048];
-		char c[30], *cl;
-		int freecl = FALSE;
+		char *cl;
+                const char *argprefix;
 		BOOL inherit_handles;
 		STARTUPINFO si;
 		PROCESS_INFORMATION pi;
 		HANDLE filemap = NULL;
+
+                if (restricted_acl)
+                    argprefix = "&R";
+                else
+                    argprefix = "";
 
 		if (wParam == IDM_DUPSESS) {
 		    /*
@@ -2208,20 +2191,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 			}
 		    }
 		    inherit_handles = TRUE;
-		    sprintf(c, "putty &%p:%u", filemap, (unsigned)size);
-		    cl = c;
+		    cl = dupprintf("putty %s&%p:%u", argprefix,
+                                   filemap, (unsigned)size);
 		} else if (wParam == IDM_SAVEDSESS) {
 		    unsigned int sessno = ((lParam - IDM_SAVED_MIN)
 					   / MENU_SAVED_STEP) + 1;
 		    if (sessno < (unsigned)sesslist.nsessions) {
-			char *session = sesslist.sessions[sessno];
-			cl = dupprintf("putty @%s", session);
+			const char *session = sesslist.sessions[sessno];
+			cl = dupprintf("putty %s@%s", argprefix, session);
 			inherit_handles = FALSE;
-			freecl = TRUE;
 		    } else
 			break;
 		} else /* IDM_NEWSESS */ {
-		    cl = NULL;
+                    cl = dupprintf("putty%s%s",
+                                   *argprefix ? " " : "",
+                                   argprefix);
 		    inherit_handles = FALSE;
 		}
 
@@ -2240,8 +2224,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 
 		if (filemap)
 		    CloseHandle(filemap);
-		if (freecl)
-		    sfree(cl);
+                sfree(cl);
 	    }
 	    break;
 	  case IDM_RESTART:
@@ -2307,7 +2290,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 		 */
 		if (ldisc) {
                     ldisc_configure(ldisc, conf);
-		    ldisc_send(ldisc, NULL, 0, 0);
+		    ldisc_echoedit_update(ldisc);
                 }
 		if (pal)
 		    DeleteObject(pal);
@@ -2450,24 +2433,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 	  case IDM_RESET:
 	    term_pwron(term, TRUE);
 	    if (ldisc)
-		ldisc_send(ldisc, NULL, 0, 0);
+		ldisc_echoedit_update(ldisc);
 	    break;
-	    
-	  /* One Key Cleaning Screen by Kasper */
-	  case IDM_CLEAN:
-		term_pwron(term, TRUE);
-		if (ldisc)
-	    ldisc_send(ldisc, NULL, 0, 0);
-		term_clrsb(term);
-		break;
-	  /* end */
-	  
-	  /* Title change by Kasper */
-	  case IDM_CHNTITLE:
-		show_titlechange(hwnd);
-		break;
-	  /* end */
-	  
 	  case IDM_ABOUT:
 	    showabout(hwnd);
 	    break;
@@ -3174,7 +3141,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 		     */
 		    term_seen_key_event(term);
 		    if (ldisc)
-			ldisc_send(ldisc, buf, len, 1);
+			ldisc_send(ldisc, (char *)buf, len, 1);
 		    show_mouseptr(0);
 		}
 	    }
@@ -3242,7 +3209,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 
       case WM_IME_CHAR:
 	if (wParam & 0xFF00) {
-	    unsigned char buf[2];
+	    char buf[2];
 
 	    buf[1] = wParam;
 	    buf[0] = wParam >> 8;
@@ -3982,12 +3949,15 @@ int char_width(Context ctx, int uc) {
 DECL_WINDOWS_FUNCTION(static, BOOL, FlashWindowEx, (PFLASHWINFO));
 DECL_WINDOWS_FUNCTION(static, BOOL, ToUnicodeEx,
                       (UINT, UINT, const BYTE *, LPWSTR, int, UINT, HKL));
+DECL_WINDOWS_FUNCTION(static, BOOL, PlaySound, (LPCTSTR, HMODULE, DWORD));
 
 static void init_winfuncs(void)
 {
     HMODULE user32_module = load_system32_dll("user32.dll");
+    HMODULE winmm_module = load_system32_dll("winmm.dll");
     GET_WINDOWS_FUNCTION(user32_module, FlashWindowEx);
     GET_WINDOWS_FUNCTION(user32_module, ToUnicodeEx);
+    GET_WINDOWS_FUNCTION_PP(winmm_module, PlaySound);
 }
 
 /*
@@ -4260,28 +4230,6 @@ static int TranslateKey(UINT message, WPARAM wParam, LPARAM lParam,
  		flip_full_screen();
 	    return -1;
 	}
-	
-	/* Defining Hot Keys by Kasper */
-    if (wParam == VK_F1 && CONF_f1_cleanscreen)
-    {  
-        term_pwron(term, TRUE);
-        if (ldisc)
-            ldisc_send(ldisc, NULL, 0, 0);
-        term_clrsb(term);
-    }
-    if (wParam == VK_F2 && CONF_f2_copyall)
-    {  
-        term_copyall(term);
-    }
-    if (wParam == VK_F3 && CONF_f3_duplicatesection)
-    {   
-        duplicate_session_login(term);
-    }
-    if (wParam == VK_F4 && CONF_f4_titlechange)
-    {   
-        show_titlechange(hwnd);
-    }
-
 	/* Control-Numlock for app-keypad mode switch */
 	if (wParam == VK_PAUSE && shift_state == 2) {
 	    term->app_keypad_keys ^= 1;
@@ -4304,7 +4252,7 @@ static int TranslateKey(UINT message, WPARAM wParam, LPARAM lParam,
 		*p++ = "hH\010\010"[shift_state & 3];
 		return p - output;
 	      case VK_NUMPAD5:
-		*p++ = shift_state ? '.' : '.';
+		*p++ = '.';
 		return p - output;
 	      case VK_NUMPAD6:
 		*p++ = "lL\014\014"[shift_state & 3];
@@ -4489,29 +4437,16 @@ static int TranslateKey(UINT message, WPARAM wParam, LPARAM lParam,
 	code = 0;
 	switch (wParam) {
 	  case VK_F1:
-		/* Changed by Kasper for using F1 key to clean screen */
-		if (!CONF_f1_cleanscreen)
-		{
-		    code = (keystate[VK_SHIFT] & 0x80 ? 23 : 11);
-		}
+	    code = (keystate[VK_SHIFT] & 0x80 ? 23 : 11);
 	    break;
 	  case VK_F2:
-		if (!CONF_f2_copyall)
-		{
-			code = (keystate[VK_SHIFT] & 0x80 ? 24 : 12);
-		}	    
+	    code = (keystate[VK_SHIFT] & 0x80 ? 24 : 12);
 	    break;
 	  case VK_F3:
-		if (!CONF_f3_duplicatesection)
-		{
-			code = (keystate[VK_SHIFT] & 0x80 ? 25 : 13);
-		}
+	    code = (keystate[VK_SHIFT] & 0x80 ? 25 : 13);
 	    break;
 	  case VK_F4:
-		if (!CONF_f4_titlechange)
-		{
-			code = (keystate[VK_SHIFT] & 0x80 ? 26 : 14);
-		}    	    
+	    code = (keystate[VK_SHIFT] & 0x80 ? 26 : 14);
 	    break;
 	  case VK_F5:
 	    code = (keystate[VK_SHIFT] & 0x80 ? 28 : 15);
@@ -4682,7 +4617,7 @@ static int TranslateKey(UINT message, WPARAM wParam, LPARAM lParam,
 		break;
 	    }
 	    if (xkey) {
-		p += format_arrow_key(p, term, xkey, shift_state);
+		p += format_arrow_key((char *)p, term, xkey, shift_state);
 		return p - output;
 	    }
 	}
@@ -4845,7 +4780,7 @@ static int TranslateKey(UINT message, WPARAM wParam, LPARAM lParam,
 
 	    return p - output;
 	}
-	/* If we're definitly not building up an ALT-54321 then clear it */
+	/* If we're definitely not building up an ALT-54321 then clear it */
 	if (!left_alt)
 	    keys_unicode[0] = 0;
 	/* If we will be using alt_sum fix the 256s */
@@ -5264,8 +5199,8 @@ void write_clip(void *frontend, wchar_t * data, int *attr, int len, int must_des
 		multilen = WideCharToMultiByte(CP_ACP, 0, unitab+uindex, 1,
 					       NULL, 0, NULL, NULL);
 		if (multilen != 1) {
-		    blen = sprintf(before, "{\\uc%d\\u%d", multilen,
-				   udata[uindex]);
+		    blen = sprintf(before, "{\\uc%d\\u%d", (int)multilen,
+				   (int)udata[uindex]);
 		    alen = 1; strcpy(after, "}");
 		} else {
 		    blen = sprintf(before, "\\u%d", udata[uindex]);
@@ -5457,7 +5392,7 @@ void optimised_move(void *frontend, int to, int from, int lines)
 /*
  * Print a message box and perform a fatal exit.
  */
-void fatalbox(char *fmt, ...)
+void fatalbox(const char *fmt, ...)
 {
     va_list ap;
     char *stuff, morestuff[100];
@@ -5474,7 +5409,7 @@ void fatalbox(char *fmt, ...)
 /*
  * Print a modal (Really Bad) message box and perform a fatal exit.
  */
-void modalfatalbox(char *fmt, ...)
+void modalfatalbox(const char *fmt, ...)
 {
     va_list ap;
     char *stuff, morestuff[100];
@@ -5492,7 +5427,7 @@ void modalfatalbox(char *fmt, ...)
 /*
  * Print a message box and don't close the connection.
  */
-void nonfatal(char *fmt, ...)
+void nonfatal(const char *fmt, ...)
 {
     va_list ap;
     char *stuff, morestuff[100];
@@ -5608,8 +5543,8 @@ void do_beep(void *frontend, int mode)
 	lastbeep = GetTickCount();
     } else if (mode == BELL_WAVEFILE) {
 	Filename *bell_wavefile = conf_get_filename(conf, CONF_bell_wavefile);
-	if (!PlaySound(bell_wavefile->path, NULL,
-		       SND_ASYNC | SND_FILENAME)) {
+	if (!p_PlaySound || !p_PlaySound(bell_wavefile->path, NULL,
+                         SND_ASYNC | SND_FILENAME)) {
 	    char buf[sizeof(bell_wavefile->path) + 80];
 	    char otherbuf[100];
 	    sprintf(buf, "Unable to play sound file\n%s\n"
@@ -5899,7 +5834,7 @@ int from_backend_eof(void *frontend)
     return TRUE;   /* do respond to incoming EOF with outgoing */
 }
 
-int get_userpass_input(prompts_t *p, unsigned char *in, int inlen)
+int get_userpass_input(prompts_t *p, const unsigned char *in, int inlen)
 {
     int ret;
     ret = cmdline_get_passwd_input(p, in, inlen);
